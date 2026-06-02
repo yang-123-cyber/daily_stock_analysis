@@ -466,7 +466,20 @@ jobs:
           else
             python main.py $FORCE_RUN_ARG
           fi
-      
+      - name: Export easytrader signal email
+        if: always()
+        continue-on-error: true
+        env:
+          STOCK_LIST: ${{ secrets.STOCK_LIST }}
+          DATABASE_PATH: ./data/stock_analysis.db
+          TRADE_SIGNAL_EMAIL: ${{ secrets.TRADE_SIGNAL_EMAIL }}
+          TRADE_SIGNAL_EMAIL_PASSWORD: ${{ secrets.TRADE_SIGNAL_EMAIL_PASSWORD }}
+          TRADE_SIGNAL_TO_EMAIL: ${{ secrets.TRADE_SIGNAL_TO_EMAIL }}
+          TRADE_SIGNAL_SMTP_HOST: smtp.163.com
+          TRADE_SIGNAL_SMTP_PORT: "465"
+          TRADE_SIGNAL_AMOUNT: "100"
+          TRADE_SIGNAL_MIN_SCORE: "65"
+        run: python scripts/export_trade_signals.py
       - name: 上传分析报告
         uses: actions/upload-artifact@v6
         if: always()
