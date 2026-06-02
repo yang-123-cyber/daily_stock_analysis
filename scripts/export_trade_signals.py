@@ -1,3 +1,71 @@
+    import json
+import os
+import smtplib
+import sqlite3
+from datetime import datetime
+from email.message import EmailMessage
+from pathlib import Path
+
+
+BUY_WORDS = ("买", "加仓", "strong buy", "buy")
+SELL_WORDS = ("卖", "减仓", "止损", "strong sell", "sell")
+
+
+def get_stock_list():
+    return [
+        item.strip().split(".")[0].replace("sh", "").replace("sz", "")
+        for item in os.getenv("STOCK_LIST", "").split(",")
+        if item.strip()
+    ]
+
+
+def latest_close(conn, code):
+    for table in ("stock_daily", "stock_history", "daily_data"):
+        try:
+            row = conn.execute(
+                f"select close from {table} where code=? order by date desc limit 1",
+                (code,),
+            ).fetchone()
+            return float(row[0]) if row and row[0] else None
+        except sqlite3.Error:
+            continue
+    return None
+
+
+def latest_analysis(conn, code):
+    queries = [
+        """
+        select code,name,operation_advice,analysis_summary,ideal_buy,secondary_buy,
+               stop_loss,take_profit,sentiment_score,created_at
+        from analysis_history
+        where code=?
+        order by datetime(created_at) desc
+        limit 1
+        """,
+        """
+        select stock_code,stock_name,recommendation,analysis,ideal_buy_price,buy_price,
+               stop_loss_price,take_profit_price,score,created_at
+        from analysis_results
+        where stock_code=?
+        order by datetime(created_at) desc
+        limit 1
+        """,
+    ]
+    for query in queries:
+        try:
+            return conn.execute(query, (code,)).fetchone()
+        except sqlite3.Error:
+            continue
+    return None
+
+
+def infer_signal(row, close_price):
+    code, name, advice, summary, ideal_buy, secondary_buy, stop_loss, take_profit, score, created_at = row
+    text = f"{advice or ''} {summary or ''}".lower()
+    score = int(score or 0)
+    action = "hold"
+    price = 0
+
     if any(word in text for word in SELL_WORDS):
         action = "sell"
         price = close_price or stop_loss or 0
@@ -21,9 +89,21 @@
 
 
 def send_email(payload):
-    sender = os.environ["TRADE_SIGNAL_EMAIL"]
-    password = os.environ["TRADE_SIGNAL_EMAIL_PASSWORD"]
-    receiver = os.getenv("TRADE_SIGNAL_TO_EMAIL", sender)
+    sender = os.getenv("TRADE_SIGNAL_EMAIL") or os.getenv("EMAIL_SENDER")
+    password = os.getenv("TRADE_SIGNAL_EMAIL_PASSWORD") or os.getenv("EMAIL_PASSWORD")
+    receiver = (
+        os.getenv("TRADE_SIGNAL_TO_EMAIL")
+        or os.getenv("EMAIL_RECEIVERS", "")
+        .replace(";", ",")
+        .split(",")[0]
+        .strip()
+        or sender
+    )
+    if not sender or not password or not receiver:
+        raise RuntimeError(
+            "Missing email config. Set TRADE_SIGNAL_EMAIL/TRADE_SIGNAL_EMAIL_PASSWORD/"
+            "TRADE_SIGNAL_TO_EMAIL, or reuse EMAIL_SENDER/EMAIL_PASSWORD/EMAIL_RECEIVERS."
+        )
 
     msg = EmailMessage()
     msg["From"] = sender
@@ -47,34 +127,39 @@ def send_email(payload):
 
 def main():
     db_path = Path(os.getenv("DATABASE_PATH", "./data/stock_analysis.db"))
-    if not db_path.exists():
-        raise FileNotFoundError(f"Database not found: {db_path}")
-
     stock_codes = get_stock_list()
     if not stock_codes:
         raise RuntimeError("STOCK_LIST is empty.")
 
     signals = []
-    with sqlite3.connect(db_path) as conn:
+    if db_path.exists():
+        with sqlite3.connect(db_path) as conn:
+            for code in stock_codes:
+                row = latest_analysis(conn, code)
+                if not row:
+                    signals.append(hold_signal(code, "未找到分析记录，安全起见观望"))
+                    continue
+                signals.append(infer_signal(row, latest_close(conn, code)))
+    else:
         for code in stock_codes:
-            row = latest_analysis(conn, code)
-            if not row:
-                signals.append({
-                    "symbol": code,
-                    "action": "hold",
-                    "price": 0,
-                    "amount": 100,
-                    "confidence": 1,
-                    "reason": "未找到当日分析记录，安全起见观望",
-                    "source_time": datetime.now().isoformat(),
-                })
-                continue
-            signals.append(infer_signal(row, latest_close(conn, code)))
+            signals.append(hold_signal(code, f"数据库不存在：{db_path}，安全起见观望"))
 
     payload = {"signals": signals, "generated_at": datetime.now().isoformat()}
     Path("daily_signals.json").write_text(json.dumps(payload, ensure_ascii=False, indent=2), encoding="utf-8")
     send_email(payload)
     print(json.dumps(payload, ensure_ascii=False, indent=2))
+
+
+def hold_signal(code, reason):
+    return {
+        "symbol": code,
+        "action": "hold",
+        "price": 0,
+        "amount": int(os.getenv("TRADE_SIGNAL_AMOUNT", "100")),
+        "confidence": 1,
+        "reason": reason,
+        "source_time": datetime.now().isoformat(),
+    }
 
 
 if __name__ == "__main__":
