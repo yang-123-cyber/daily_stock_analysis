@@ -470,7 +470,7 @@ jobs:
         if: always()
         continue-on-error: true
         env:
-          STOCK_LIST: ${{ secrets.STOCK_LIST }}
+          STOCK_LIST: ${{ vars.STOCK_LIST || secrets.STOCK_LIST }}
           DATABASE_PATH: ./data/stock_analysis.db
           TRADE_SIGNAL_EMAIL: ${{ secrets.TRADE_SIGNAL_EMAIL }}
           TRADE_SIGNAL_EMAIL_PASSWORD: ${{ secrets.TRADE_SIGNAL_EMAIL_PASSWORD }}
