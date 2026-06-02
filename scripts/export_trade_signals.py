@@ -1,4 +1,4 @@
-    import json
+import json
 import os
 import smtplib
 import sqlite3
@@ -7,8 +7,8 @@ from email.message import EmailMessage
 from pathlib import Path
 
 
-BUY_WORDS = ("买", "加仓", "strong buy", "buy")
-SELL_WORDS = ("卖", "减仓", "止损", "strong sell", "sell")
+BUY_WORDS = ("\u4e70", "\u52a0\u4ed3", "strong buy", "buy")
+SELL_WORDS = ("\u5356", "\u51cf\u4ed3", "\u6b62\u635f", "strong sell", "sell")
 
 
 def get_stock_list():
@@ -60,7 +60,18 @@ def latest_analysis(conn, code):
 
 
 def infer_signal(row, close_price):
-    code, name, advice, summary, ideal_buy, secondary_buy, stop_loss, take_profit, score, created_at = row
+    (
+        code,
+        name,
+        advice,
+        summary,
+        ideal_buy,
+        secondary_buy,
+        stop_loss,
+        take_profit,
+        score,
+        created_at,
+    ) = row
     text = f"{advice or ''} {summary or ''}".lower()
     score = int(score or 0)
     action = "hold"
@@ -69,7 +80,9 @@ def infer_signal(row, close_price):
     if any(word in text for word in SELL_WORDS):
         action = "sell"
         price = close_price or stop_loss or 0
-    elif any(word in text for word in BUY_WORDS) and score >= int(os.getenv("TRADE_SIGNAL_MIN_SCORE", "65")):
+    elif any(word in text for word in BUY_WORDS) and score >= int(
+        os.getenv("TRADE_SIGNAL_MIN_SCORE", "65")
+    ):
         action = "buy"
         price = ideal_buy or secondary_buy or close_price or 0
 
@@ -83,8 +96,20 @@ def infer_signal(row, close_price):
         "price": round(float(price), 2) if price else 0,
         "amount": int(os.getenv("TRADE_SIGNAL_AMOUNT", "100")),
         "confidence": max(1, min(10, round(score / 10))) if score else 5,
-        "reason": f"{name or code}: {advice or '无明确建议'}；{summary or ''}"[:220],
+        "reason": f"{name or code}: {advice or 'no clear advice'}; {summary or ''}"[:220],
         "source_time": str(created_at or ""),
+    }
+
+
+def hold_signal(code, reason):
+    return {
+        "symbol": code,
+        "action": "hold",
+        "price": 0,
+        "amount": int(os.getenv("TRADE_SIGNAL_AMOUNT", "100")),
+        "confidence": 1,
+        "reason": reason,
+        "source_time": datetime.now().isoformat(),
     }
 
 
@@ -93,16 +118,13 @@ def send_email(payload):
     password = os.getenv("TRADE_SIGNAL_EMAIL_PASSWORD") or os.getenv("EMAIL_PASSWORD")
     receiver = (
         os.getenv("TRADE_SIGNAL_TO_EMAIL")
-        or os.getenv("EMAIL_RECEIVERS", "")
-        .replace(";", ",")
-        .split(",")[0]
-        .strip()
+        or os.getenv("EMAIL_RECEIVERS", "").replace(";", ",").split(",")[0].strip()
         or sender
     )
     if not sender or not password or not receiver:
         raise RuntimeError(
-            "Missing email config. Set TRADE_SIGNAL_EMAIL/TRADE_SIGNAL_EMAIL_PASSWORD/"
-            "TRADE_SIGNAL_TO_EMAIL, or reuse EMAIL_SENDER/EMAIL_PASSWORD/EMAIL_RECEIVERS."
+            "Missing email config. Set TRADE_SIGNAL_EMAIL, "
+            "TRADE_SIGNAL_EMAIL_PASSWORD and TRADE_SIGNAL_TO_EMAIL."
         )
 
     msg = EmailMessage()
@@ -137,29 +159,20 @@ def main():
             for code in stock_codes:
                 row = latest_analysis(conn, code)
                 if not row:
-                    signals.append(hold_signal(code, "未找到分析记录，安全起见观望"))
+                    signals.append(hold_signal(code, "No analysis record; hold for safety."))
                     continue
                 signals.append(infer_signal(row, latest_close(conn, code)))
     else:
         for code in stock_codes:
-            signals.append(hold_signal(code, f"数据库不存在：{db_path}，安全起见观望"))
+            signals.append(hold_signal(code, f"Database not found: {db_path}; hold."))
 
     payload = {"signals": signals, "generated_at": datetime.now().isoformat()}
-    Path("daily_signals.json").write_text(json.dumps(payload, ensure_ascii=False, indent=2), encoding="utf-8")
+    Path("daily_signals.json").write_text(
+        json.dumps(payload, ensure_ascii=False, indent=2),
+        encoding="utf-8",
+    )
     send_email(payload)
     print(json.dumps(payload, ensure_ascii=False, indent=2))
-
-
-def hold_signal(code, reason):
-    return {
-        "symbol": code,
-        "action": "hold",
-        "price": 0,
-        "amount": int(os.getenv("TRADE_SIGNAL_AMOUNT", "100")),
-        "confidence": 1,
-        "reason": reason,
-        "source_time": datetime.now().isoformat(),
-    }
 
 
 if __name__ == "__main__":
