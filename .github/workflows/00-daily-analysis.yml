@@ -479,6 +479,7 @@ jobs:
           TRADE_SIGNAL_SMTP_PORT: "465"
           TRADE_SIGNAL_AMOUNT: "100"
           TRADE_SIGNAL_MIN_SCORE: "65"
+          TRADE_SIGNAL_MODE: conservative
         run: python scripts/export_trade_signals.py
       - name: 上传分析报告
         uses: actions/upload-artifact@v6
